@@ -97,12 +97,9 @@
   },
   "permissions": [
     "alarms",
-    "contextMenus",
-    "privacy",
     "storage",
     "tabs",
     "unlimitedStorage",
-    "webNavigation",
     "webRequest",
     "webRequestBlocking",
     "<all_urls>"

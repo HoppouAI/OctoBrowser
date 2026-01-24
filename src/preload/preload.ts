@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startStream: (message: string, model?: string) => 
         ipcRenderer.send('copilot:stream-start', message, model),
     abortStream: () => ipcRenderer.send('copilot:abort'),
+    sendAnswer: (answers: any) => ipcRenderer.invoke('copilot:answer-user', answers),
 
     // Settings
     getSetting: (key: string) => ipcRenderer.invoke('settings:get', key),
@@ -62,6 +63,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // External
     openExternal: (url: string) => ipcRenderer.send('shell:openExternal', url),
+    copyToClipboard: (text: string) => ipcRenderer.send('clipboard:write', text),
 
     // Event listeners
     onTabCreated: (callback: (tab: unknown) => void) => {
@@ -100,6 +102,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     onStreamError: (callback: (error: string) => void) => {
         ipcRenderer.on('copilot:stream-error', (_event, error) => callback(error));
+    },
+    onAskUser: (callback: (questions: any[]) => void) => {
+        ipcRenderer.on('copilot:ask-user', (_event, questions) => callback(questions));
     },
     onShowAbout: (callback: () => void) => {
         ipcRenderer.on('show:about', () => callback());
@@ -142,11 +147,13 @@ declare global {
             searchWeb: (query: string) => Promise<{ success: boolean; url: string }>;
             startStream: (message: string, model?: string) => void;
             abortStream: () => void;
+            sendAnswer: (answers: any) => Promise<boolean>;
             getSetting: (key: string) => Promise<unknown>;
             setSetting: (key: string, value: unknown) => Promise<boolean>;
             getTheme: () => Promise<string>;
             setTheme: (theme: string) => void;
             openExternal: (url: string) => void;
+            copyToClipboard: (text: string) => void;
             onTabCreated: (callback: (tab: Tab) => void) => void;
             onTabClosed: (callback: (id: string) => void) => void;
             onTabSelected: (callback: (id: string) => void) => void;
@@ -159,6 +166,7 @@ declare global {
             onStreamChunk: (callback: (chunk: string) => void) => void;
             onStreamEnd: (callback: (result: string) => void) => void;
             onStreamError: (callback: (error: string) => void) => void;
+            onAskUser: (callback: (questions: any[]) => void) => void;
             onShowAbout: (callback: () => void) => void;
             removeAllListeners: (channel: string) => void;
         };

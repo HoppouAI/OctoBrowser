@@ -61,6 +61,11 @@ const elements = {
     settingsBtn: document.getElementById('settings-btn'),
     settingsModal: document.getElementById('settings-modal'),
     ublockToggle: document.getElementById('ublock-toggle'),
+
+    // Questions Modal
+    questionsModal: document.getElementById('questions-modal'),
+    questionsContainer: document.getElementById('questions-container'),
+    submitAnswersBtn: document.getElementById('submit-answers-btn'),
 };
 
 // Initialize
@@ -208,13 +213,6 @@ function setupEventListeners() {
             } else {
                 elements.customScrollbar.style.height = scrolled + "%";
             }
-            
-            // Glow effect when reaching bottom
-            if (scrolled >= 99) {
-                elements.customScrollbar.classList.add("glow");
-            } else {
-                elements.customScrollbar.classList.remove("glow");
-            }
         });
     }
     
@@ -249,6 +247,12 @@ function setupEventListeners() {
                 window.electronAPI.setSetting('ublockEnabled', e.target.checked);
             });
         }
+    }
+
+    // Questions Modal
+    if (elements.questionsModal) {
+        elements.submitAnswersBtn.addEventListener('click', submitAnswers);
+        // Do not allow closing via overlay click for questions - user must answer
     }
     
     // Zero State Action
@@ -383,6 +387,10 @@ function setupIpcListeners() {
     window.electronAPI.onStreamEvent((event) => {
         handleStreamEvent(event);
     });
+
+    window.electronAPI.onAskUser((questions) => {
+        showQuestionsModal(questions);
+    });
     
     window.electronAPI.onStreamEnd((result) => {
         state.isStreaming = false;
@@ -395,9 +403,9 @@ function setupIpcListeners() {
         
         // If no streaming message was created (no content received), show a fallback
         if (!streamingMessage && result) {
-            const assistantMsg = { role: 'assistant', content: result, timestamp: Date.now() };
+            const assistantMsg = { id: 'asst-' + Date.now(), role: 'assistant', content: result, timestamp: Date.now() };
             state.messages.push(assistantMsg);
-            addMessage('assistant', result, false);
+            addMessage('assistant', result, false, assistantMsg.id);
         } else if (streamingMessage) {
             // Save the streamed content
             // We need to extract the full text from the DOM elements because it came in chunks
@@ -405,7 +413,12 @@ function setupIpcListeners() {
             let fullText = '';
             textBlocks.forEach(block => fullText += block.getAttribute('data-raw') || '');
             
-            const assistantMsg = { role: 'assistant', content: fullText, timestamp: Date.now() };
+            // Get ID from DOM if possible, otherwise generate
+            const msgId = streamingMessage.dataset.id || ('asst-' + Date.now());
+            // Ensure ID is set on DOM if it wasn't
+            if (!streamingMessage.dataset.id) streamingMessage.dataset.id = msgId;
+
+            const assistantMsg = { id: msgId, role: 'assistant', content: fullText, timestamp: Date.now() };
             state.messages.push(assistantMsg);
         }
         
@@ -637,9 +650,9 @@ async function sendMessage() {
     }
     
     // Add user message
-    const userMessage = { role: 'user', content: message, timestamp: Date.now() };
+    const userMessage = { id: Date.now().toString(), role: 'user', content: message, timestamp: Date.now() };
     state.messages.push(userMessage);
-    addMessage(userMessage.role, userMessage.content);
+    addMessage(userMessage.role, userMessage.content, false, userMessage.id);
     saveCurrentSession();
     
     // Clear input
@@ -717,10 +730,13 @@ function updateSendButton() {
     }
 }
 
-function addMessage(role, content, isStreaming = false) {
+function addMessage(role, content, isStreaming = false, id = null) {
     const messageEl = document.createElement('div');
     messageEl.className = 'message';
     messageEl.dataset.role = role;
+    if (id) {
+        messageEl.dataset.id = id;
+    }
     if (isStreaming) {
         messageEl.dataset.streaming = 'true';
     }
@@ -756,6 +772,94 @@ function addMessage(role, content, isStreaming = false) {
     
     contentWrapper.appendChild(roleLabel);
     contentWrapper.appendChild(messageBlocks);
+    
+    // Add actions for assistant messages
+    if (role === 'assistant') {
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'message-actions';
+        
+        // Copy Button
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'action-btn';
+        copyBtn.title = 'Copy response';
+        copyBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 15h-7.5A1.75 1.75 0 0 1 0 13.25V6.75Zm5-3.25C5 2.536 5.784 1.75 6.75 1.75h3.5c.966 0 1.75.784 1.75 1.75v3.5A1.75 1.75 0 0 1 10.25 8.75h-3.5A1.75 1.75 0 0 1 5 7V3.5Zm1.75-.25a.25.25 0 0 0-.25.25v3.5c0 .138.112.25.25.25h3.5a.25.25 0 0 0 .25-.25v-3.5a.25.25 0 0 0-.25-.25h-3.5Z"></path></svg>';
+        
+        copyBtn.addEventListener('click', () => {
+             const textBlocks = messageBlocks.querySelectorAll('.message-text');
+             let fullText = '';
+             textBlocks.forEach(block => fullText += block.getAttribute('data-raw') || '');
+             
+             if (!fullText) {
+                 fullText = messageBlocks.innerText;
+             }
+             
+             window.electronAPI.copyToClipboard(fullText);
+             
+             const originalIcon = copyBtn.innerHTML;
+             copyBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>';
+             copyBtn.classList.add('success');
+             setTimeout(() => {
+                 copyBtn.innerHTML = originalIcon;
+                 copyBtn.classList.remove('success');
+             }, 2000);
+        });
+        
+        // Retry/Rerun Button
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'action-btn';
+        retryBtn.title = 'Rerun prompt';
+        retryBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path></svg>';
+        
+        retryBtn.addEventListener('click', () => {
+            let prev = messageEl.previousElementSibling;
+            while(prev && prev.dataset.role !== 'user') {
+                prev = prev.previousElementSibling;
+            }
+            
+            if (prev) {
+                const textBlock = prev.querySelector('.message-text');
+                if (textBlock) {
+                    const raw = textBlock.getAttribute('data-raw') || textBlock.innerText;
+                    elements.chatInput.value = raw;
+                    autoResizeTextarea(elements.chatInput);
+                    elements.chatInput.focus();
+                    
+                    // Remove both messages from state and DOM
+                    const currentId = messageEl.dataset.id;
+                    const prevId = prev.dataset.id;
+                    
+                    if (currentId && prevId) {
+                        state.messages = state.messages.filter(m => m.id !== currentId && m.id !== prevId);
+                    } else {
+                        // Fallback if IDs missing (legacy messages) - remove last 2 if these are the last 2
+                        // Or just rely on DOM removal and let state drift if it's edge case
+                        // But best effort to sync state:
+                        // Find index of these messages? Not reliable without ID.
+                        // Assuming they are at the end for simple retry:
+                         if (state.messages.length >= 2) {
+                             // Check if they match content roughly?
+                             // Just removing from DOM is visible action. 
+                             // To fix history:
+                             // Reconstruct state from DOM? No.
+                             // We'll just try to match by content if ID missing?
+                             // For now, assume IDs are present for new messages.
+                         }
+                    }
+
+                    messageEl.remove();
+                    prev.remove();
+
+                    // Automatically send
+                    elements.sendBtn.disabled = false;
+                    sendMessage();
+                }
+            }
+        });
+ 
+        actionsDiv.appendChild(copyBtn);
+        actionsDiv.appendChild(retryBtn);
+        contentWrapper.appendChild(actionsDiv);
+    }
     
     messageEl.appendChild(avatar);
     messageEl.appendChild(contentWrapper);
@@ -876,9 +980,19 @@ function completeToolBlock(id, result) {
         block.classList.add('completed');
         const title = block.querySelector('.status-title');
         
+        let displayResult = result;
+        
+        // Handle images (Data URLs) - only on explicit tool result
+        if (typeof result === 'string' && result.startsWith('data:image')) {
+            title.textContent = 'Screenshot captured';
+            const content = block.querySelector('.status-content');
+            content.innerHTML = `<img src="${result}" style="max-width: 100%; border-radius: 4px; border: 1px solid var(--border-default);" alt="Screenshot">`;
+            // Don't set text content if we set innerHTML
+            return;
+        }
+
         if (result) {
             // Use the result text if available, truncating simply for the title
-            let displayResult = result;
             // Clean up standard prefixes if present in result to keep it short
             // e.g. "Found 5 match(es) for..."
             
@@ -889,9 +1003,13 @@ function completeToolBlock(id, result) {
             
             // Update the detailed content with full result
             const content = block.querySelector('.status-content');
-            content.textContent = result;
+            content.innerHTML = formatMarkdown(result);
+            content.setAttribute('data-raw', result);
         } else {
             title.textContent = title.textContent.replace('Using', 'Used');
+            // Fix: Update content so it doesn't say 'Processing request...'
+            const content = block.querySelector('.status-content');
+            content.textContent = 'Action completed.';
         }
         
         const icon = block.querySelector('.status-icon');
@@ -932,6 +1050,9 @@ function appendToLastMessage(chunk) {
 }
 
 function addThinkingIndicator() {
+    // Check if one already exists to avoid duplicates
+    if (document.getElementById('thinking-indicator')) return;
+    
     const indicator = document.createElement('div');
     indicator.className = 'thinking-indicator';
     indicator.id = 'thinking-indicator';
@@ -1116,7 +1237,9 @@ async function loadSession(id) {
     
     // Render messages
     state.messages.forEach(msg => {
-        addMessage(msg.role, msg.content, false);
+        // Ensure msg has ID if legacy
+        if (!msg.id) msg.id = 'msg-' + Date.now() + Math.random().toString(36).substr(2, 5);
+        addMessage(msg.role, msg.content, false, msg.id);
     });
     
     closeHistoryModal();
@@ -1188,6 +1311,146 @@ function showSettingsModal() {
 function closeSettingsModal() {
     elements.settingsModal.classList.add('hidden');
     window.electronAPI.setModalOpen(false);
+}
+
+// Question Functions
+function showQuestionsModal(questions) {
+    if (!questions || questions.length === 0) return;
+    
+    elements.questionsContainer.innerHTML = '';
+    
+    questions.forEach((q, index) => {
+        const questionGroup = document.createElement('div');
+        questionGroup.className = 'question-group';
+        questionGroup.style.marginBottom = '20px';
+        
+        // Header
+        const label = document.createElement('label');
+        label.className = 'question-label';
+        label.textContent = q.question;
+        label.style.display = 'block';
+        label.style.fontWeight = 'bold';
+        label.style.marginBottom = '8px';
+        questionGroup.appendChild(label);
+        
+        // Options
+        if (q.options && q.options.length > 0) {
+            // Select (multi or single)
+            if (q.multiSelect) {
+                // Checkboxes
+                q.options.forEach((opt, optIndex) => {
+                    const optDiv = document.createElement('div');
+                    optDiv.className = 'option-item';
+                    optDiv.style.marginBottom = '5px';
+                    
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = `q${index}-opt${optIndex}`;
+                    checkbox.name = `q${index}`;
+                    checkbox.value = opt.label;
+                    if (opt.recommended) checkbox.checked = true;
+                    
+                    const optLabel = document.createElement('label');
+                    optLabel.htmlFor = `q${index}-opt${optIndex}`;
+                    optLabel.textContent = opt.label + (opt.description ? ` - ${opt.description}` : '');
+                    optLabel.style.marginLeft = '8px';
+                    
+                    optDiv.appendChild(checkbox);
+                    optDiv.appendChild(optLabel);
+                    questionGroup.appendChild(optDiv);
+                });
+            } else {
+                // Radio buttons
+                q.options.forEach((opt, optIndex) => {
+                    const optDiv = document.createElement('div');
+                    optDiv.className = 'option-item';
+                    optDiv.style.marginBottom = '5px';
+                    
+                    const radio = document.createElement('input');
+                    radio.type = 'radio';
+                    radio.id = `q${index}-opt${optIndex}`;
+                    radio.name = `q${index}`;
+                    radio.value = opt.label;
+                    if (opt.recommended) radio.checked = true;
+                    
+                    const optLabel = document.createElement('label');
+                    optLabel.htmlFor = `q${index}-opt${optIndex}`;
+                    optLabel.textContent = opt.label + (opt.description ? ` - ${opt.description}` : '');
+                    optLabel.style.marginLeft = '8px';
+                    
+                    optDiv.appendChild(radio);
+                    optDiv.appendChild(optLabel);
+                    questionGroup.appendChild(optDiv);
+                });
+            }
+        } else {
+            // Free text
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.id = `q${index}-input`;
+            input.name = `q${index}`;
+            input.className = 'text-input';
+            input.style.width = '100%';
+            input.style.padding = '8px';
+            input.style.borderRadius = '4px';
+            input.style.border = '1px solid var(--border-color)';
+            input.style.backgroundColor = 'var(--input-bg)';
+            input.style.color = 'var(--text-color)';
+            
+            questionGroup.appendChild(input);
+        }
+        
+        elements.questionsContainer.appendChild(questionGroup);
+    });
+    
+    // Store original questions structure for parsing answers
+    state.currentQuestions = questions;
+    
+    elements.questionsModal.classList.remove('hidden');
+    window.electronAPI.setModalOpen(true);
+}
+
+function submitAnswers() {
+    if (!state.currentQuestions) return;
+    
+    const answers = [];
+    
+    state.currentQuestions.forEach((q, index) => {
+        let answer;
+        
+        if (q.options && q.options.length > 0) {
+            if (q.multiSelect) {
+                // Collect all checked
+                const checked = Array.from(document.querySelectorAll(`input[name="q${index}"]:checked`));
+                answer = checked.map(c => c.value);
+            } else {
+                // Find checked radio
+                const checked = document.querySelector(`input[name="q${index}"]:checked`);
+                answer = checked ? checked.value : null;
+            }
+        } else {
+            // Text input
+            const input = document.getElementById(`q${index}-input`);
+            answer = input ? input.value : '';
+        }
+        
+        // Match the format expected by the tool (usually mapped by question header/id, but simpler is array index or question text)
+        // The tool returns whatever the user provides. We'll return structured objects.
+        answers.push({
+            question: q.question,
+            answer: answer
+        });
+    });
+    
+    // Send to main process
+    window.electronAPI.sendAnswer(answers);
+    
+    // Close modal
+    elements.questionsModal.classList.add('hidden');
+    window.electronAPI.setModalOpen(false);
+    state.currentQuestions = null;
+    
+    scrollToBottom();
 }
 
 // Utility functions

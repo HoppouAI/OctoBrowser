@@ -17,6 +17,7 @@ export interface BrowserToolCallbacks {
     getOpenTabs: () => Promise<Array<{ id: string; title: string; url: string }>>;
     closeTab: (tabId: string) => Promise<boolean>;
     clickElement: (selector: string) => Promise<boolean>;
+    clickElementByText: (text: string) => Promise<boolean>;
     typeText: (text: string, selector?: string) => Promise<boolean>;
     findInPage: (text: string) => Promise<{ count: number }>;
     scrollPage: (direction: 'up' | 'down' | 'top' | 'bottom') => Promise<void>;
@@ -24,6 +25,12 @@ export interface BrowserToolCallbacks {
     goForward: () => Promise<void>;
     takeScreenshot: () => Promise<string | null>;
     wait: (duration: number, selector?: string) => Promise<boolean>;
+    askUser?: (questions: any[]) => Promise<any>;
+    getClickableLinks: () => Promise<Array<{ text: string; url: string; type: string }>>;
+    clickByIndex: (index: number) => Promise<boolean>;
+    searchInPage: (text: string) => Promise<{ found: boolean; matches: string[] }>;
+    getVisualDescription: () => Promise<string>;
+    saveScreenshotToFile: () => Promise<string | null>;
 }
 
 // Wrap tool handlers with timeout
@@ -143,19 +150,42 @@ You're a helpful AI integrated into a web browser with full browser automation c
 - Type text into search boxes and forms
 - Scroll pages up/down
 - Find text on pages
-- Take screenshots
+- Take screenshots and get DETAILED VISUAL DESCRIPTIONS of page state (video playing, buttons visible, text content, etc.)
 - Navigate back/forward in history
 - Wait for page content or specific elements to load
+- Ask clarifying questions to the user rather than ending the turn.
 </capabilities>
 
 <instructions>
 - Be concise and direct.
-- When users ask about the current page, ALWAYS use browser_get_page_content first to understand the context.
+- IMPORTANT: You are a browser automation agent. DO NOT use any tools other than the provided \`browser_*\` tools.
+- **VISUAL AWARENESS**: Use \`browser_take_screenshot\` to get a detailed structured description of what's visible on the page. This tells you:
+  - Whether a video is playing, paused, buffering, or showing an ad
+  - All visible buttons and their labels
+  - Video titles, channels, and URLs on YouTube
+  - Form inputs and their current values
+  - Headings and key text content
+  - Alerts and notices
+- When users ask about the current page state (e.g., "is the video playing?", "what do you see?"), use \`browser_take_screenshot\`.
+- **CRITICAL**: Before taking a screenshot or interacting with a page after navigation, YOU MUST USE \`browser_wait\` (for at least 2000ms or waiting for a selector) to ensure the content has loaded. Do not assume immediate load.
+- **CRITICAL**: When you need to ask the user a question, clarify intent, or get a decision (e.g., "Which video should I play?"), YOU MUST use the \`browser_ask_questions\` tool. DO NOT ask questions in your final text response. Use the tool to present options or get input.
+- **YOUTUBE WORKFLOW**: When searching for videos on YouTube:
+  1. Use \`browser_search_youtube\` to search
+  2. Use \`browser_wait\` (2000ms) for results to load
+  3. Use \`browser_take_screenshot\` or \`browser_get_links\` to see the video results with their URLs
+  4. If user requested a specific video, find the matching one from the results
+  5. If multiple matches exist, use \`browser_ask_questions\` to let user choose
+  6. Use \`browser_click_video\` with the video number to click it
 - For general web searches, use browser_search_web.
 - For YouTube searches, use browser_search_youtube.
-- To interact with page elements, use browser_click_element or browser_type_text with precise selectors.
+- To open URLs, use browser_open_url.
+- To interact with page elements, use browser_click_element (if you know the selector) or browser_click_text (if you know the text).
 - If a page has infinite scroll or likely more content, use browser_scroll_page to investigate.
 - If a tool fails, explain why and try a different approach (e.g. searching instead of direct navigation).
+- You can "play" media by navigating to the video page. Do not state you cannot play videos if you can navigate to them.
+- Prefer reusing the current tab for navigation actions unless explicitly asked to open a new tab. Avoid opening excessive tabs.
+If you've opened multiple tabs trying to find something please close the old unused tabs when finished using browser_close_tabs. Do not just leave tabs open for no reason.
+- Do not play random youtube Videos only play the requested video or ask the user to select from the top results using the ask questions tool.
 </instructions>
 
 <best_practices>
@@ -163,6 +193,11 @@ You're a helpful AI integrated into a web browser with full browser automation c
 - **Verification**: After navigating, check the page content to ensure you are where you expect to be.
 - **Selectors**: Use robust CSS selectors for clicks (e.g., IDs, unique classes, or attribute selectors).
 - **Navigation**: Prefer direct navigation if the URL is known or obvious; otherwise search.
+- **Error Handling**: If a tool fails, provide a clear explanation and consider alternative actions.
+- **User Intent**: Always align your actions with the user's original intent, clarifying when necessary.
+- **Multiple steps**: If a user tells you to do a long task, complete it as requested.
+- **YouTube Videos**: YouTube videos automatically play when opened, theres no need to click play.
+- **Tab management**: If you have more than 2 tabs open, close any that are not needed using browser_close_tabs to keep your workspace tidy. Make sure to not continue opening new tabs without closing old ones. and dont close the active tab unless instructed. and dont close tabs opened by the user. Make sure after completing a task to list open tabs using browser_get_open_tabs and close any unneeded ones.
 </best_practices>
 `,
             },
@@ -264,18 +299,18 @@ You're a helpful AI integrated into a web browser with full browser automation c
                     }
                 },
             }),
-            defineToolFn('browser_navigate_to_url', {
-                description: 'Navigate the browser to a specific URL or website. Can optionally open in a new tab.',
+            defineToolFn('browser_open_url', {
+                description: 'Open a URL in the browser. Can open in the current tab or a new tab.',
                 parameters: {
                     type: 'object',
                     properties: {
                         url: {
                             type: 'string',
-                            description: 'The URL to navigate to',
+                            description: 'The URL to open',
                         },
                         target: {
                             type: 'string',
-                            description: 'Where to open the URL: "current_tab" (default) or "new_tab"',
+                            description: 'Where to open: "current_tab" (default) or "new_tab"',
                             enum: ['current_tab', 'new_tab'],
                         },
                     },
@@ -286,12 +321,12 @@ You're a helpful AI integrated into a web browser with full browser automation c
                     try {
                         const target = args.target || 'current_tab';
                         await withTimeout(callbacks.navigateToUrl(args.url, target), 10000);
-                        const msg = `Navigated to ${args.url} in ${target === 'new_tab' ? 'new tab' : 'current tab'}`;
-                        reportResult('browser_navigate_to_url', msg);
+                        const msg = `Opened ${args.url} in ${target === 'new_tab' ? 'new tab' : 'current tab'}`;
+                        reportResult('browser_open_url', msg);
                         return msg;
                     } catch (error: any) {
-                        const msg = `Failed to navigate: ${error.message || 'unknown error'}`;
-                        reportResult('browser_navigate_to_url', msg);
+                        const msg = `Failed to open URL: ${error.message || 'unknown error'}`;
+                        reportResult('browser_open_url', msg);
                         return msg;
                     }
                 },
@@ -326,36 +361,39 @@ You're a helpful AI integrated into a web browser with full browser automation c
                     }
                 },
             }),
-            defineToolFn('browser_close_tab', {
-                description: 'Close a specific browser tab by its ID.',
+            defineToolFn('browser_close_tabs', {
+                description: 'Close one or more browser tabs by their IDs.',
                 parameters: {
                     type: 'object',
                     properties: {
-                        tabId: {
-                            type: 'string',
-                            description: 'The ID of the tab to close (get this from browser_get_open_tabs)',
+                        tabIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of tab IDs to close (get these from browser_get_open_tabs)',
                         },
                     },
-                    required: ['tabId'],
+                    required: ['tabIds'],
                 },
-                handler: async (args: { tabId: string }) => {
+                handler: async (args: { tabIds: string[] }) => {
                     if (!callbacks) return 'Browser tools not available';
                     try {
-                        const success = await withTimeout(callbacks.closeTab(args.tabId), 5000);
-                        const msg = success 
-                            ? `Closed tab ${args.tabId}` 
-                            : `Failed to close tab ${args.tabId} (it might not exist)`;
-                        reportResult('browser_close_tab', msg);
+                        const results = [];
+                        for (const id of args.tabIds) {
+                            const success = await withTimeout(callbacks.closeTab(id), 5000);
+                            results.push(success ? `Closed ${id}` : `Failed ${id}`);
+                        }
+                        const msg = `Closed ${results.length} tabs: ${results.join(', ')}`;
+                        reportResult('browser_close_tabs', msg);
                         return msg;
                     } catch (error: any) {
-                        const msg = `Failed to close tab: ${error.message || 'unknown error'}`;
-                        reportResult('browser_close_tab', msg);
+                        const msg = `Failed to close tabs: ${error.message || 'unknown error'}`;
+                        reportResult('browser_close_tabs', msg);
                         return msg;
                     }
                 },
             }),
             defineToolFn('browser_click_element', {
-                description: 'Click on an element on the page using a CSS selector.',
+                description: 'Click on an element on the page using a CSS selector. Use this when you know the specific DOM structure or ID.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -376,6 +414,32 @@ You're a helpful AI integrated into a web browser with full browser automation c
                     } catch (error: any) {
                         const msg = `Failed to click: ${error.message || 'unknown error'}`;
                         reportResult('browser_click_element', msg);
+                        return msg;
+                    }
+                },
+            }),
+            defineToolFn('browser_click_text', {
+                description: 'Click on an element containing specific text. useful when you see text on the page but don\'t know the CSS selector.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        text: {
+                            type: 'string',
+                            description: 'The text displayed on the element you want to click (button label, link text, etc.)',
+                        },
+                    },
+                    required: ['text'],
+                },
+                handler: async (args: { text: string }) => {
+                    if (!callbacks) return 'Browser tools not available';
+                    try {
+                        const success = await withTimeout(callbacks.clickElementByText(args.text), 10000);
+                        const msg = success ? `Clicked element with text: "${args.text}"` : `No element found containing text: "${args.text}"`;
+                        reportResult('browser_click_text', msg);
+                        return msg;
+                    } catch (error: any) {
+                        const msg = `Failed to click by text: ${error.message || 'unknown error'}`;
+                        reportResult('browser_click_text', msg);
                         return msg;
                     }
                 },
@@ -508,7 +572,7 @@ You're a helpful AI integrated into a web browser with full browser automation c
                 },
             }),
             defineToolFn('browser_take_screenshot', {
-                description: 'Take a screenshot of the current page.',
+                description: 'Take a screenshot of the current page and get a detailed visual description. This gives you a structured view of what\'s on screen including all visible text, buttons, links, images, videos, and UI elements with their positions.',
                 parameters: {
                     type: 'object',
                     properties: {},
@@ -517,10 +581,27 @@ You're a helpful AI integrated into a web browser with full browser automation c
                 handler: async () => {
                     if (!callbacks) return 'Browser tools not available';
                     try {
+                        // Capture screenshot for user display
                         const dataUrl = await withTimeout(callbacks.takeScreenshot(), 10000);
-                        const msg = dataUrl ? 'Screenshot captured' : 'Failed to capture';
-                        reportResult('browser_take_screenshot', msg);
-                        return msg;
+                        if (dataUrl) {
+                            // Send the image to UI so user can see it
+                            reportResult('browser_take_screenshot', dataUrl);
+                            
+                            // HOTWIRE: Save to file for potential view tool access
+                            if (callbacks.saveScreenshotToFile) {
+                                const filePath = await callbacks.saveScreenshotToFile();
+                                if (filePath) {
+                                    console.log(`Screenshot saved to: ${filePath}`);
+                                }
+                            }
+                        } else {
+                            reportResult('browser_take_screenshot', 'Screenshot captured (processing...)');
+                        }
+                        
+                        // HOTWIRE: Get structured visual description instead of relying on vision
+                        const visualDescription = await withTimeout(callbacks.getVisualDescription(), 10000);
+                        
+                        return visualDescription;
                     } catch (error: any) {
                         const msg = `Failed to screenshot: ${error.message || 'unknown error'}`;
                         reportResult('browser_take_screenshot', msg);
@@ -579,6 +660,169 @@ You're a helpful AI integrated into a web browser with full browser automation c
                     // but for debugging or completeness we can report it.
                     reportResult('browser_report_intent', msg);
                     return msg;
+                },
+            }),
+            defineToolFn('browser_ask_questions', {
+                description: 'Ask the user questions to clarify intent, validate assumptions, or choose between implementation approaches. Use this when you are stuck or need user input to proceed.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        questions: {
+                            description: 'Array of 1-4 questions to ask the user',
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    header: {
+                                        description: 'A short label (max 12 chars) displayed as a quick pick header',
+                                        type: 'string'
+                                    },
+                                    question: {
+                                        description: 'The complete question text to display',
+                                        type: 'string'
+                                    },
+                                    multiSelect: {
+                                        description: 'Allow multiple selections',
+                                        type: 'boolean'
+                                    },
+                                    options: {
+                                        description: '0-6 options for the user to choose from. If empty or omitted, shows a free text input instead.',
+                                        type: 'array',
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                label: { description: 'Option label text', type: 'string' },
+                                                description: { description: 'Optional description for the option', type: 'string' },
+                                                recommended: { description: 'Mark this option as recommended', type: 'boolean' }
+                                            },
+                                            required: ['label']
+                                        }
+                                    }
+                                },
+                                required: ['header', 'question']
+                            }
+                        }
+                    },
+                    required: ['questions'],
+                },
+                handler: async (args: { questions: any[] }) => {
+                    if (!callbacks || !callbacks.askUser) return 'Ask user capability not available (ensure main process implements askUser callback)';
+                    try {
+                        // User interaction might take a while, so we use a very long timeout (e.g. 5 minutes)
+                        const answers = await withTimeout(callbacks.askUser(args.questions), 300000);
+                        const result = JSON.stringify(answers);
+                        
+                        let displayResult = 'User answered questions:\n';
+                        if (Array.isArray(answers)) {
+                            displayResult += answers.map((a: any) => `**${a.question}**: ${Array.isArray(a.answer) ? a.answer.join(', ') : a.answer}`).join('\n\n');
+                        } else {
+                            displayResult += 'Action Completed.';
+                        }
+                        
+                        reportResult('browser_ask_questions', displayResult);
+                        return result;
+                    } catch (error: any) {
+                        const msg = `Failed to get answers: ${error.message || 'unknown error'}`;
+                        reportResult('browser_ask_questions', msg);
+                        return msg;
+                    }
+                },
+            }),
+            defineToolFn('browser_get_links', {
+                description: 'Get all clickable links and buttons on the current page. Returns an array of items with text, URL, and type. Essential for finding YouTube video links or navigation options.',
+                parameters: {
+                    type: 'object',
+                    properties: {},
+                    required: [],
+                },
+                handler: async () => {
+                    if (!callbacks || !callbacks.getClickableLinks) return 'Get links capability not available';
+                    try {
+                        const links = await withTimeout(callbacks.getClickableLinks(), 10000);
+                        if (links.length === 0) {
+                            const msg = 'No clickable links found on page';
+                            reportResult('browser_get_links', msg);
+                            return msg;
+                        }
+                        
+                        // Format links for easy reading
+                        const formatted = links.map((link: any, i: number) => {
+                            if (link.type === 'youtube-video') {
+                                return `[${link.index || i+1}] VIDEO: "${link.text}" → ${link.url}`;
+                            } else if (link.type === 'button') {
+                                return `[BTN] "${link.text}"`;
+                            } else {
+                                return `[LINK] "${link.text}" → ${link.url}`;
+                            }
+                        }).join('\n');
+                        
+                        const msg = `Found ${links.length} clickable items:\n${formatted}`;
+                        reportResult('browser_get_links', `Found ${links.length} links`);
+                        return msg;
+                    } catch (error: any) {
+                        const msg = `Failed to get links: ${error.message || 'unknown error'}`;
+                        reportResult('browser_get_links', msg);
+                        return msg;
+                    }
+                },
+            }),
+            defineToolFn('browser_click_video', {
+                description: 'Click on a YouTube video result by its number/index. Use after browser_get_links to click the correct video.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        index: {
+                            type: 'number',
+                            description: 'The video number to click (1 for first video, 2 for second, etc.)',
+                        },
+                    },
+                    required: ['index'],
+                },
+                handler: async (args: { index: number }) => {
+                    if (!callbacks || !callbacks.clickByIndex) return 'Click by index capability not available';
+                    try {
+                        const success = await withTimeout(callbacks.clickByIndex(args.index), 10000);
+                        const msg = success 
+                            ? `Clicked video #${args.index}` 
+                            : `Could not find video #${args.index}`;
+                        reportResult('browser_click_video', msg);
+                        return msg;
+                    } catch (error: any) {
+                        const msg = `Failed to click video: ${error.message || 'unknown error'}`;
+                        reportResult('browser_click_video', msg);
+                        return msg;
+                    }
+                },
+            }),
+            defineToolFn('browser_search_text', {
+                description: 'Search for text on the page (case-insensitive). Returns matching text snippets. Use this to verify content exists before clicking.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        text: {
+                            type: 'string',
+                            description: 'The text to search for on the page',
+                        },
+                    },
+                    required: ['text'],
+                },
+                handler: async (args: { text: string }) => {
+                    if (!callbacks || !callbacks.searchInPage) return 'Search capability not available';
+                    try {
+                        const result = await withTimeout(callbacks.searchInPage(args.text), 5000);
+                        let msg: string;
+                        if (result.found) {
+                            msg = `Found "${args.text}" on page:\n${result.matches.map((m: string) => `• ${m}`).join('\n')}`;
+                        } else {
+                            msg = `"${args.text}" not found on page`;
+                        }
+                        reportResult('browser_search_text', result.found ? `Found ${result.matches?.length || 0} matches` : 'No matches');
+                        return msg;
+                    } catch (error: any) {
+                        const msg = `Failed to search: ${error.message || 'unknown error'}`;
+                        reportResult('browser_search_text', msg);
+                        return msg;
+                    }
                 },
             }),
         ];

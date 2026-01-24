@@ -1430,11 +1430,6 @@ html, body {
     opacity: 0.6;
 }
 
-.custom-scrollbar-thumb.glow {
-    box-shadow: 0 0 14px 4px var(--accent-primary);
-    opacity: 1;
-}
-
 /* Zero State (No Tabs) */
 .zero-state {
     position: absolute;
@@ -1606,5 +1601,42 @@ input:checked + .slider:before {
 
 .slider.round:before {
     border-radius: 50%;
+}
+
+
+/* Message Actions */
+.message-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+}
+
+.action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 4px;
+    background-color: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.action-btn:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.action-btn.success {
+    color: var(--success);
 }
 

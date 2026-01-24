@@ -451,37 +451,73 @@ export class TabManager {
         try {
             const result = await view.webContents.executeJavaScript(`
                 (function() {
-                    const getTextContent = (element) => {
-                        if (!element) return '';
-                        
-                        // Skip script, style, and other non-content elements
-                        const skipTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG'];
-                        if (skipTags.includes(element.tagName)) return '';
-                        
-                        let text = '';
-                        for (const child of element.childNodes) {
-                            if (child.nodeType === Node.TEXT_NODE) {
-                                text += child.textContent + ' ';
-                            } else if (child.nodeType === Node.ELEMENT_NODE) {
-                                text += getTextContent(child);
+                    // Helper to check if element is visible
+                    function isVisible(el) {
+                        // Fast check for common hidden attributes
+                        if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+                         
+                        const style = window.getComputedStyle(el);
+                        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                    }
+
+                    // Markdown-like text extractor that includes URLs
+                    function traverse(node, buffer) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            const text = node.textContent.replace(/[\\n\\r]+/g, ' ').replace(/\\s{2,}/g, ' ');
+                            if (text.trim().length > 0) buffer.push(text);
+                        } else if (node.nodeType === Node.ELEMENT_NODE) {
+                            if (!isVisible(node)) return;
+                            
+                            const tagName = node.tagName;
+                            if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'SVG', 'PATH', 'META', 'LINK'].includes(tagName)) return;
+                            
+                            // Block-level elements adding newline
+                            const isBlock = ['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TR', 'ARTICLE', 'SECTION', 'MAIN', 'HEADER', 'FOOTER'].includes(tagName);
+                            
+                            if (isBlock && buffer.length > 0 && !buffer[buffer.length-1].endsWith('\\n')) {
+                                buffer.push('\\n');
                             }
+
+                            // Handle Links specifically: [Text](URL)
+                            if (tagName === 'A') {
+                                const href = node.getAttribute('href');
+                                if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+                                     buffer.push(' [');
+                                     // Recurse for link text
+                                     for (const child of node.childNodes) traverse(child, buffer);
+                                     
+                                     // Resolve relative URLs
+                                     let fullUrl = href;
+                                     try {
+                                         fullUrl = new URL(href, window.location.href).href;
+                                     } catch(e) {}
+                                     
+                                     buffer.push('](' + fullUrl + ') ');
+                                     return; 
+                                }
+                            }
+
+                            for (const child of node.childNodes) {
+                                traverse(child, buffer);
+                            }
+                            
+                            if (isBlock) buffer.push('\\n');
                         }
-                        return text;
-                    };
+                    }
                     
-                    // Use innerText if available for better visibility filtering, fallback to textContent
-                    const mainContent = document.querySelector('main, article, [role="main"], #content, .content') || document.body;
-                    const rawText = mainContent.innerText || getTextContent(mainContent);
+                    // Attempt to find the main content area to reduce noise
+                    const mainContent = document.querySelector('main, [role="main"], #content, #primary, #main') || document.body;
                     
-                    const content = rawText
-                        .replace(/\\s+/g, ' ')
-                        .trim()
-                        .substring(0, 4000); // Limit content length strict to avoid token limits
+                    const buffer = [];
+                    traverse(mainContent, buffer);
+                    
+                    // Join and cleanup multiple newlines
+                    let content = buffer.join('').replace(/\\n\\s*\\n/g, '\\n\\n').trim();
                     
                     return {
                         title: document.title,
                         url: window.location.href,
-                        content: content
+                        content: content.substring(0, 8000) // Increased limit to accommodate URLs
                     };
                 })();
             `);
@@ -513,6 +549,77 @@ export class TabManager {
             return result;
         } catch (error) {
             console.error('Failed to click element:', error);
+            return false;
+        }
+    }
+
+    async clickElementByText(text: string): Promise<boolean> {
+        if (!this.activeTabId) return false;
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return false;
+
+        try {
+            const result = await view.webContents.executeJavaScript(`
+                (function() {
+                    const text = ${JSON.stringify(text)}.toLowerCase();
+                    const selectors = 'a, button, [role="button"], input[type="submit"], input[type="button"], h1, h2, h3, h4, h5, h6, span, div';
+                    const elements = Array.from(document.querySelectorAll(selectors));
+                    
+                    // Filter for visible elements only
+                    const visibleElements = elements.filter(el => {
+                         const style = window.getComputedStyle(el);
+                         return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetParent !== null;
+                    });
+
+                    // 1. Exact match
+                    let target = visibleElements.find(el => el.innerText.trim().toLowerCase() === text);
+                    
+                    // 2. Contains match (prioritize buttons/links)
+                    if (!target) {
+                        target = visibleElements.find(el => {
+                            const isClickable = el.tagName === 'A' || el.tagName === 'BUTTON' || el.getAttribute('role') === 'button';
+                            return isClickable && el.innerText.toLowerCase().includes(text);
+                        });
+                    }
+
+                    // 3. Any contains match
+                    if (!target) {
+                        target = visibleElements.find(el => el.innerText.toLowerCase().includes(text));
+                    }
+                    
+                    if (target) {
+                        // Start from target and walk up to find clickable parent if the target itself isn't obviously clickable
+                        let clickable = target;
+                        const maxDepth = 5;
+                        let depth = 0;
+                        
+                        while (clickable && clickable !== document.body && depth < maxDepth) {
+                            if (clickable.tagName === 'A' || clickable.tagName === 'BUTTON' || clickable.getAttribute('role') === 'button' || clickable.onclick || clickable.getAttribute('jsaction')) {
+                                clickable.click();
+                                // Also try sending a MouseEvent for custom frameworks like React/Angular sometimes
+                                const clickEvent = new MouseEvent('click', {
+                                    view: window,
+                                    bubbles: true,
+                                    cancelable: true
+                                });
+                                clickable.dispatchEvent(clickEvent);
+                                return true;
+                            }
+                            clickable = clickable.parentElement;
+                            depth++;
+                        }
+                        
+                        // Fallback: just click the target element itself
+                        target.click();
+                        return true;
+                    }
+                    return false;
+                })();
+            `);
+            return result;
+        } catch (error) {
+            console.error('Failed to click element by text:', error);
             return false;
         }
     }
@@ -639,6 +746,377 @@ export class TabManager {
         } catch (error) {
             console.error('Failed to wait:', error);
             return false;
+        }
+    }
+
+    async getClickableLinks(): Promise<Array<{ text: string; url: string; type: string }>> {
+        if (!this.activeTabId) return [];
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return [];
+
+        try {
+            const result = await view.webContents.executeJavaScript(`
+                (function() {
+                    const links = [];
+                    const seen = new Set();
+                    
+                    // Helper to check visibility
+                    function isVisible(el) {
+                        if (!el || el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) return false;
+                        const style = window.getComputedStyle(el);
+                        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                    }
+                    
+                    // Get text content, preferring aria-label or title
+                    function getText(el) {
+                        return (el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || '').trim().substring(0, 200);
+                    }
+                    
+                    // YouTube-specific: Extract video results
+                    const ytVideos = document.querySelectorAll('ytd-video-renderer, ytd-compact-video-renderer, ytd-playlist-renderer');
+                    ytVideos.forEach((video, index) => {
+                        const titleEl = video.querySelector('#video-title, a#video-title-link, h3 a');
+                        const channelEl = video.querySelector('#channel-name a, #text.ytd-channel-name, .ytd-channel-name');
+                        if (titleEl && isVisible(video)) {
+                            const href = titleEl.getAttribute('href');
+                            if (href && !seen.has(href)) {
+                                seen.add(href);
+                                let fullUrl = href;
+                                try { fullUrl = new URL(href, window.location.href).href; } catch(e) {}
+                                
+                                const title = getText(titleEl);
+                                const channel = channelEl ? getText(channelEl) : '';
+                                links.push({
+                                    text: title + (channel ? ' — ' + channel : ''),
+                                    url: fullUrl,
+                                    type: 'youtube-video',
+                                    index: index + 1
+                                });
+                            }
+                        }
+                    });
+                    
+                    // Generic links
+                    const allLinks = document.querySelectorAll('a[href]');
+                    allLinks.forEach(a => {
+                        if (!isVisible(a)) return;
+                        const href = a.getAttribute('href');
+                        if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+                        if (seen.has(href)) return;
+                        
+                        const text = getText(a);
+                        if (!text || text.length < 2) return;
+                        
+                        seen.add(href);
+                        let fullUrl = href;
+                        try { fullUrl = new URL(href, window.location.href).href; } catch(e) {}
+                        
+                        links.push({ text, url: fullUrl, type: 'link' });
+                    });
+                    
+                    // Buttons
+                    const buttons = document.querySelectorAll('button, [role="button"]');
+                    buttons.forEach(btn => {
+                        if (!isVisible(btn)) return;
+                        const text = getText(btn);
+                        if (text && text.length > 1) {
+                            links.push({ text, url: '', type: 'button' });
+                        }
+                    });
+                    
+                    return links.slice(0, 50); // Limit to prevent huge payloads
+                })();
+            `);
+            return result;
+        } catch (error) {
+            console.error('Failed to get clickable links:', error);
+            return [];
+        }
+    }
+
+    async clickByIndex(index: number): Promise<boolean> {
+        if (!this.activeTabId) return false;
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return false;
+
+        try {
+            const result = await view.webContents.executeJavaScript(`
+                (function() {
+                    const index = ${index};
+                    
+                    // YouTube-specific: Click video by index
+                    const ytVideos = Array.from(document.querySelectorAll('ytd-video-renderer, ytd-compact-video-renderer'));
+                    const visibleVideos = ytVideos.filter(v => {
+                        const rect = v.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    });
+                    
+                    if (index >= 1 && index <= visibleVideos.length) {
+                        const video = visibleVideos[index - 1];
+                        const titleLink = video.querySelector('#video-title, a#video-title-link, h3 a');
+                        if (titleLink) {
+                            titleLink.click();
+                            return { success: true, clicked: titleLink.innerText.trim().substring(0, 100) };
+                        }
+                    }
+                    
+                    return { success: false, error: 'Video at index ' + index + ' not found. Found ' + visibleVideos.length + ' videos.' };
+                })();
+            `);
+            return result.success;
+        } catch (error) {
+            console.error('Failed to click by index:', error);
+            return false;
+        }
+    }
+
+    async searchInPage(text: string): Promise<{ found: boolean; matches: string[] }> {
+        if (!this.activeTabId) return { found: false, matches: [] };
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return { found: false, matches: [] };
+
+        try {
+            const result = await view.webContents.executeJavaScript(`
+                (function() {
+                    const searchText = ${JSON.stringify(text)}.toLowerCase();
+                    const matches = [];
+                    
+                    // Search in all text nodes
+                    const walker = document.createTreeWalker(
+                        document.body,
+                        NodeFilter.SHOW_TEXT,
+                        null,
+                        false
+                    );
+                    
+                    let node;
+                    while (node = walker.nextNode()) {
+                        const content = node.textContent.toLowerCase();
+                        if (content.includes(searchText)) {
+                            // Get surrounding context
+                            const parent = node.parentElement;
+                            if (parent) {
+                                const style = window.getComputedStyle(parent);
+                                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                    const text = parent.innerText.trim().substring(0, 150);
+                                    if (text && !matches.includes(text)) {
+                                        matches.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    return {
+                        found: matches.length > 0,
+                        count: matches.length,
+                        matches: matches.slice(0, 10) // Limit results
+                    };
+                })();
+            `);
+            return result;
+        } catch (error) {
+            console.error('Failed to search in page:', error);
+            return { found: false, matches: [] };
+        }
+    }
+
+    async getVisualDescription(): Promise<string> {
+        if (!this.activeTabId) return 'No active tab';
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return 'No active view';
+
+        try {
+            const result = await view.webContents.executeJavaScript(`
+                (function() {
+                    const output = [];
+                    
+                    // Page info
+                    output.push('=== PAGE VISUAL DESCRIPTION ===');
+                    output.push('Title: ' + document.title);
+                    output.push('URL: ' + window.location.href);
+                    output.push('');
+                    
+                    // Check if it's a video page
+                    const isYouTube = window.location.hostname.includes('youtube.com');
+                    const video = document.querySelector('video');
+                    
+                    if (isYouTube) {
+                        output.push('=== YOUTUBE PAGE ===');
+                        
+                        // Check if it's a watch page
+                        if (window.location.pathname === '/watch') {
+                            output.push('Page Type: VIDEO PLAYER');
+                            
+                            // Video title
+                            const titleEl = document.querySelector('h1.ytd-video-primary-info-renderer, h1.ytd-watch-metadata yt-formatted-string, #title h1 yt-formatted-string');
+                            if (titleEl) output.push('Video Title: ' + titleEl.innerText.trim());
+                            
+                            // Channel
+                            const channelEl = document.querySelector('#channel-name a, ytd-channel-name a');
+                            if (channelEl) output.push('Channel: ' + channelEl.innerText.trim());
+                            
+                            // Video state
+                            if (video) {
+                                output.push('');
+                                output.push('=== VIDEO PLAYER STATE ===');
+                                output.push('Video Duration: ' + Math.floor(video.duration || 0) + ' seconds');
+                                output.push('Current Time: ' + Math.floor(video.currentTime || 0) + ' seconds');
+                                output.push('Paused: ' + video.paused);
+                                output.push('Muted: ' + video.muted);
+                                output.push('Volume: ' + Math.round((video.volume || 0) * 100) + '%');
+                                
+                                // Check for ads
+                                const adShowing = document.querySelector('.ytp-ad-player-overlay, .ytp-ad-text');
+                                if (adShowing) {
+                                    output.push('AD IS CURRENTLY PLAYING');
+                                    const skipBtn = document.querySelector('.ytp-ad-skip-button, .ytp-skip-ad-button');
+                                    if (skipBtn) output.push('Skip Ad button is available');
+                                }
+                                
+                                // Processing/loading state
+                                const spinner = document.querySelector('.ytp-spinner');
+                                if (spinner && window.getComputedStyle(spinner).display !== 'none') {
+                                    output.push('VIDEO IS LOADING/BUFFERING');
+                                }
+                            }
+                            
+                            // Views/likes
+                            const viewCount = document.querySelector('#count .ytd-video-view-count-renderer, ytd-video-view-count-renderer');
+                            if (viewCount) output.push('Views: ' + viewCount.innerText.trim());
+                            
+                        } else if (window.location.pathname === '/results') {
+                            output.push('Page Type: SEARCH RESULTS');
+                            
+                            // Get search query
+                            const searchInput = document.querySelector('input#search');
+                            if (searchInput) output.push('Search Query: ' + searchInput.value);
+                            
+                            // List video results
+                            output.push('');
+                            output.push('=== VIDEO RESULTS ===');
+                            const videos = document.querySelectorAll('ytd-video-renderer');
+                            let videoNum = 0;
+                            videos.forEach((vid, i) => {
+                                if (videoNum >= 10) return;
+                                const title = vid.querySelector('#video-title');
+                                const channel = vid.querySelector('#channel-name');
+                                const url = title ? title.getAttribute('href') : '';
+                                if (title && title.innerText.trim()) {
+                                    videoNum++;
+                                    output.push('[' + videoNum + '] ' + title.innerText.trim());
+                                    if (channel) output.push('    Channel: ' + channel.innerText.trim());
+                                    if (url) output.push('    URL: https://youtube.com' + url);
+                                }
+                            });
+                        } else {
+                            output.push('Page Type: ' + (window.location.pathname.startsWith('/@') ? 'CHANNEL' : 'OTHER'));
+                        }
+                    } else if (video) {
+                        // Generic video page
+                        output.push('=== VIDEO DETECTED ===');
+                        output.push('Duration: ' + Math.floor(video.duration || 0) + 's');
+                        output.push('Playing: ' + !video.paused);
+                        output.push('Current Time: ' + Math.floor(video.currentTime || 0) + 's');
+                    }
+                    
+                    // Visible buttons and interactive elements
+                    output.push('');
+                    output.push('=== VISIBLE BUTTONS & CONTROLS ===');
+                    const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+                    const visibleButtons = buttons.filter(btn => {
+                        const rect = btn.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) return false;
+                        const style = window.getComputedStyle(btn);
+                        return style.display !== 'none' && style.visibility !== 'hidden';
+                    }).slice(0, 15);
+                    
+                    visibleButtons.forEach(btn => {
+                        const text = (btn.getAttribute('aria-label') || btn.innerText || btn.getAttribute('title') || '').trim();
+                        if (text && text.length > 1 && text.length < 100) {
+                            output.push('• Button: "' + text + '"');
+                        }
+                    });
+                    
+                    // Key visible text (headlines, main content)
+                    output.push('');
+                    output.push('=== KEY VISIBLE TEXT ===');
+                    const headings = document.querySelectorAll('h1, h2, h3');
+                    headings.forEach((h, i) => {
+                        if (i >= 5) return;
+                        const text = h.innerText.trim();
+                        if (text && text.length > 2 && text.length < 200) {
+                            output.push('• ' + h.tagName + ': ' + text);
+                        }
+                    });
+                    
+                    // Important notices/alerts
+                    const alerts = document.querySelectorAll('[role="alert"], .error, .warning, .notice, .message');
+                    alerts.forEach(alert => {
+                        const text = alert.innerText.trim();
+                        if (text && text.length > 5 && text.length < 200) {
+                            output.push('⚠ NOTICE: ' + text);
+                        }
+                    });
+                    
+                    // Forms/inputs
+                    const inputs = document.querySelectorAll('input[type="text"], input[type="search"], textarea');
+                    const visibleInputs = Array.from(inputs).filter(inp => {
+                        const rect = inp.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    }).slice(0, 5);
+                    
+                    if (visibleInputs.length > 0) {
+                        output.push('');
+                        output.push('=== INPUT FIELDS ===');
+                        visibleInputs.forEach(inp => {
+                            const placeholder = inp.getAttribute('placeholder') || inp.getAttribute('aria-label') || 'text input';
+                            const value = inp.value ? ' (contains: "' + inp.value.substring(0, 50) + '")' : ' (empty)';
+                            output.push('• ' + placeholder + value);
+                        });
+                    }
+                    
+                    return output.join('\\n');
+                })();
+            `);
+            return result;
+        } catch (error) {
+            console.error('Failed to get visual description:', error);
+            return 'Failed to analyze page';
+        }
+    }
+
+    async saveScreenshotToFile(): Promise<string | null> {
+        if (!this.activeTabId) return null;
+        
+        const view = this.tabs.get(this.activeTabId);
+        if (!view) return null;
+
+        try {
+            const image = await view.webContents.capturePage();
+            const pngBuffer = image.toPNG();
+            
+            // Save to temp directory
+            const os = require('os');
+            const path = require('path');
+            const fs = require('fs');
+            
+            const tempDir = os.tmpdir();
+            const filename = `octobrowser_screenshot_${Date.now()}.png`;
+            const filePath = path.join(tempDir, filename);
+            
+            fs.writeFileSync(filePath, pngBuffer);
+            
+            return filePath;
+        } catch (error) {
+            console.error('Failed to save screenshot to file:', error);
+            return null;
         }
     }
 }

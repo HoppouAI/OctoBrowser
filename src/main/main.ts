@@ -3,7 +3,7 @@
  * Main Process
  */
 
-import { app, BrowserWindow, ipcMain, session, Menu, shell, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Menu, shell, nativeTheme, clipboard } from 'electron';
 import * as path from 'path';
 import { CopilotService } from './copilot-service';
 import { TabManager } from './tab-manager';
@@ -18,6 +18,8 @@ let copilotService: CopilotService | null = null;
 let tabManager: TabManager | null = null;
 let settingsStore: SettingsStore;
 let historyStore: HistoryStore;
+
+let pendingUserQuestionResolver: ((answers: any) => void) | null = null;
 
 const isDev = !app.isPackaged;
 
@@ -171,6 +173,9 @@ function setupIpcHandlers(): void {
                 clickElement: async (selector: string) => {
                     return tabManager?.clickElement(selector) || false;
                 },
+                clickElementByText: async (text: string) => {
+                    return tabManager?.clickElementByText(text) || false;
+                },
                 typeText: async (text: string, selector?: string) => {
                     return tabManager?.typeText(text, selector) || false;
                 },
@@ -192,9 +197,43 @@ function setupIpcHandlers(): void {
                 wait: async (duration: number, selector?: string) => {
                     return tabManager?.wait(duration, selector) || false;
                 },
+                askUser: async (questions: any[]) => {
+                    if (!mainWindow) return null;
+                    
+                    // Send questions to renderer
+                    mainWindow.webContents.send('copilot:ask-user', questions);
+                    
+                    // Return a promise that resolves when the user answers
+                    return new Promise((resolve) => {
+                        pendingUserQuestionResolver = resolve;
+                    });
+                },
+                getClickableLinks: async () => {
+                    return tabManager?.getClickableLinks() || [];
+                },
+                clickByIndex: async (index: number) => {
+                    return tabManager?.clickByIndex(index) || false;
+                },
+                searchInPage: async (text: string) => {
+                    return tabManager?.searchInPage(text) || { found: false, matches: [] };
+                },
+                getVisualDescription: async () => {
+                    return tabManager?.getVisualDescription() || 'No visual description available';
+                },
+                saveScreenshotToFile: async () => {
+                    return tabManager?.saveScreenshotToFile() || null;
+                },
             });
         }
         return copilotService.initialize();
+    });
+
+    ipcMain.handle('copilot:answer-user', async (_event, answers: any) => {
+        if (pendingUserQuestionResolver) {
+            pendingUserQuestionResolver(answers);
+            pendingUserQuestionResolver = null;
+        }
+        return true;
     });
 
     ipcMain.handle('copilot:sendMessage', async (_event, message: string, model?: string) => {
@@ -251,6 +290,11 @@ function setupIpcHandlers(): void {
     // External links
     ipcMain.on('shell:openExternal', (_event, url: string) => {
         shell.openExternal(url);
+    });
+    
+    // Clipboard
+    ipcMain.on('clipboard:write', (_event, text: string) => {
+        clipboard.writeText(text);
     });
 
     // Context Menu
@@ -322,12 +366,8 @@ function setupWebviewPermissions(): void {
     });
 
     // Set user agent - use realistic Chrome UA to avoid bot detection
-    session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-        details.requestHeaders['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-        // Remove headers that might indicate automation
-        delete details.requestHeaders['X-Devtools-Emulate-Network-Conditions-Client-Id'];
-        callback({ requestHeaders: details.requestHeaders });
-    });
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+    session.defaultSession.setUserAgent(userAgent);
 }
 
 function createMenu(): void {
@@ -409,10 +449,13 @@ app.whenReady().then(async () => {
     // Load uBlock Origin if enabled
     const ublockEnabled = settingsStore.get('ublockEnabled') !== false; // Default to true
     if (ublockEnabled) {
-        const extensionPath = path.join(__dirname, '../../extensions/ublock/uBlock0.chromium');
-        session.defaultSession.loadExtension(extensionPath)
-            .then(() => console.log('uBlock Origin loaded'))
-            .catch(err => console.error('Failed to load uBlock Origin:', err));
+        try {
+            const extensionPath = path.join(__dirname, '../../extensions/ublock/uBlock0.chromium');
+            await session.defaultSession.loadExtension(extensionPath);
+            console.log('uBlock Origin loaded');
+        } catch (err) {
+            console.error('Failed to load uBlock Origin:', err);
+        }
     }
 
     setupIpcHandlers();
