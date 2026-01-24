@@ -1,7 +1,7 @@
 # OctoBrowser
 
 <p align="center">
-  <img src="assets/icon.svg" alt="OctoBrowser Logo" width="128" height="128">
+  <img src="assets/github-copilot-icon.svg" alt="OctoBrowser Logo" width="128" height="128">
 </p>
 
 <h3 align="center">AI-Powered Web Browser with GitHub Copilot SDK</h3>
