@@ -1,0 +1,65 @@
+{
+  "name": "octobrowser",
+  "version": "1.0.0",
+  "description": "OctoBrowser - AI-Powered Web Browser with GitHub Copilot SDK",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:main\" \"npm run dev:preload\" \"wait-on dist/main/main.js dist/preload/preload.js && electron .\"",
+    "dev:main": "tsc -p tsconfig.main.json --watch",
+    "dev:preload": "tsc -p tsconfig.preload.json --watch",
+    "build": "npm run build:main && npm run build:preload",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:preload": "tsc -p tsconfig.preload.json",
+    "start": "npm run build && electron .",
+    "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:linux": "npm run build && electron-builder --linux"
+  },
+  "keywords": [
+    "browser",
+    "electron",
+    "copilot",
+    "github",
+    "ai",
+    "chromium"
+  ],
+  "author": "OctoBrowser Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "typescript": "^5.3.0",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.1.16",
+    "electron-store": "^8.1.0"
+  },
+  "build": {
+    "appId": "com.octobrowser.app",
+    "productName": "OctoBrowser",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}

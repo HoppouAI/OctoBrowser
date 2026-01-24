@@ -1,0 +1,114 @@
+// html
+<div class="progress-container">
+	<div id="progressbar" class="progress-bar"></div>
+</div>
+
+<div class="wrapper">
+	<section>
+		<h2>Scroll down</h2>
+	</section>
+	<section>
+		<h2>...keep going...</h2>
+	</section>
+	<section>
+		<h2>Almost there...</h2>
+	</section>
+	<section>
+		<h2>I can't believe you've done this.</h2>
+		<br>
+		<br>
+		<img src="https://i1.sndcdn.com/artworks-000153836556-yyqn60-t500x500.jpg" alt="">
+	</section>
+</div>
+
+// css
+@import url("https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Roboto:wght@100;300&display=swap");
+
+body {
+	background-color: #333;
+	font-family: "Press Start 2P", cursive;
+	margin: 0;
+	padding: 0;
+	-ms-overflow-style: none; /* for Internet Explorer, Edge */
+	scrollbar-width: none; /* for Firefox */
+	overflow-y: scroll;
+}
+
+body::-webkit-scrollbar {
+	display: none; /* for Chrome, Safari, and Opera */
+}
+
+.header h2 {
+	text-align: center;
+}
+
+.progress-container {
+	position: fixed;
+	right: 10px;
+	width: 8px;
+	height: 90%;
+	background: #222;
+	border-radius: 2px;
+	margin: auto;
+}
+
+.progress-bar {
+	width: 8px;
+	background: #d4b255;
+	border-radius: 2px;
+}
+
+.progress-bar:before {
+	height: 1%;
+}
+
+.glow {
+	-webkit-box-shadow: 0px 0px 14px 21px rgba(212, 178, 85, 0.48);
+	-moz-box-shadow: 0px 0px 14px 21px rgba(212, 178, 85, 0.48);
+	box-shadow: 0px 0px 14px 21px rgba(212, 178, 85, 0.48);
+}
+
+.wrapper {
+	margin-top: 10px;
+	margin-bottom: 10px;
+}
+
+section {
+	height: 100vh;
+	text-align: center;
+	display: flex;
+	flex-flow: column nowrap;
+	align-items: center;
+	justify-content: center;
+	align-content: center;
+}
+
+h2 {
+	color: #f1f1f1;
+}
+
+img {
+	width: 20%;
+}
+
+// js
+const progressBar = document.getElementById("progressbar");
+progressBar.style.height = 1 + "%";
+
+window.onscroll = () => {
+	const scroll = document.documentElement.scrollTop;
+	const height =
+		document.documentElement.scrollHeight - document.documentElement.clientHeight;
+	let scrolled = (scroll / height) * 100;
+
+	if (scrolled <= 1) {
+		progressBar.style.height = 1 + "%";
+	} else if (scrolled >= 2 && scrolled <= 99.9) {
+		progressBar.style.height = scrolled + "%";
+		progressBar.classList.remove("glow");
+	} else if (scrolled === 100) {
+		progressBar.style.height = scrolled + "%";
+		// 		Do something when reached 100% scroll
+		progressBar.classList.add("glow");
+	}
+};
