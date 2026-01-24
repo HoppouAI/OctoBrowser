@@ -22,7 +22,7 @@ OctoBrowser is a modern, Chromium-based web browser with GitHub Copilot SDK buil
 - **GitHub Copilot SDK Integration** - AI assistant built directly into the browser
 - **Smart Page Summarization** - Ask Copilot to summarize any webpage you're viewing
 - **Web Search Tools** - AI can search the web and navigate to pages for you
-- **Multiple AI Models** - Choose from GPT-4.1, GPT-4o, GPT-5, Claude Sonnet, O1, and more
+- **Multiple AI Models** - Choose from GPT-4.1, GPT-5-Mini, Claude Haiku 4.5, and more (can be enabled in the code)
 - **GitHub-Themed Design** - Beautiful UI inspired by GitHub's design system
 - **Dark/Light Mode** - Automatic theme switching with manual override
 - **Tab Management** - Multi-tab browsing with keyboard shortcuts
