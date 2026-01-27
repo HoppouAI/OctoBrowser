@@ -123,8 +123,8 @@ Settings are automatically saved and include:
 
 ## Contributing
 
-~~Contributions are welcome! Please feel free to submit a Pull Request.~~
-We will probably archive this after the challenge is over as it was just a temporary fun side project for the competition.
+Contributions are welcome! Please feel free to submit a Pull Request.
+Edit: Changed this back to normal as we may keep the project open source and available to do Future updates!
 
 ## License
 
