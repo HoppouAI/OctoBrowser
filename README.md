@@ -155,4 +155,5 @@ and some of our own brain...
 
 <p align="center">
   <sub>OctoBrowser is not affiliated with GitHub. GitHub and Copilot are trademarks of GitHub, Inc.</sub>
+  <sub>HoppouAI/OctoBrowser is also not affiliated with OctoBrowser (https://octobrowser.net/) in anyway whatsoever.</sub>
 </p>
