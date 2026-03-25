@@ -10,10 +10,13 @@ const state = {
     currentTheme: 'system',
     copilotReady: false,
     isStreaming: false,
+    isSending: false, // Lock to prevent double-send
     currentModel: 'gpt-4.1',
     includePageContent: false,
     currentSessionId: null,
     messages: [], // Store messages in memory
+    streamGeneration: 0, // Counter to ignore stale stream results after new chat
+    sessionReady: Promise.resolve(), // Resolves when backend session is ready
 };
 
 // DOM Elements
@@ -410,8 +413,12 @@ function setupIpcListeners() {
     });
     
     window.electronAPI.onStreamEnd((result) => {
+        const expectedGeneration = state.streamGeneration;
         state.isStreaming = false;
         updateSendButton();
+        
+        // Ignore stale stream results from before a chat was cleared
+        if (expectedGeneration !== state.streamGeneration) return;
         
         // Check if we have a streaming message BEFORE removing the indicator/attribute
         const streamingMessage = elements.chatMessages.querySelector('[data-streaming="true"]');
@@ -467,8 +474,10 @@ function setupIpcListeners() {
     });
     
     window.electronAPI.onStreamError((error) => {
+        const expectedGen = state.streamGeneration;
         state.isStreaming = false;
         updateSendButton();
+        if (expectedGen !== state.streamGeneration) return;
         removeThinkingIndicator();
         addErrorMessage(error);
     });
@@ -668,6 +677,12 @@ async function sendMessage() {
     
     if (!message) return;
     
+    // Prevent double-send while processing
+    if (state.isSending) return;
+    state.isSending = true;
+    elements.sendBtn.disabled = true;
+    elements.chatInput.disabled = true;
+    
     let fullMessage = message;
     
     // Include page content if requested
@@ -689,11 +704,16 @@ async function sendMessage() {
     const welcomeMsg = elements.chatMessages.querySelector('.welcome-message');
     if (welcomeMsg) {
         welcomeMsg.remove();
-        // Start new session
-        await startNewSession();
+        // Only create session if one doesn't exist yet (startNewChat already created one)
+        if (!state.currentSessionId) {
+            await startNewSession();
+        }
     } else if (!state.currentSessionId) {
         await startNewSession();
     }
+    
+    // Wait for any in-progress session reset to complete
+    await state.sessionReady;
     
     // Add user message
     const userMessage = { id: Date.now().toString(), role: 'user', content: message, timestamp: Date.now() };
@@ -713,6 +733,11 @@ async function sendMessage() {
     state.isStreaming = true;
     updateSendButton();
     
+    // Unlock send
+    state.isSending = false;
+    elements.chatInput.disabled = false;
+    elements.chatInput.focus();
+    
     // Send to Copilot
     window.electronAPI.startStream(fullMessage, state.currentModel);
 }
@@ -721,12 +746,16 @@ async function startNewSession() {
     state.currentSessionId = Date.now().toString();
     state.messages = [];
     
-    // Reset the Copilot session context on the backend
-    try {
-        await window.electronAPI.resetSession();
-    } catch (err) {
-        console.warn('Failed to reset Copilot session:', err);
-    }
+    // Track session readiness so sendMessage can wait for it
+    const readyPromise = (async () => {
+        try {
+            await window.electronAPI.resetSession();
+        } catch (err) {
+            console.warn('Failed to reset Copilot session:', err);
+        }
+    })();
+    state.sessionReady = readyPromise;
+    await readyPromise;
 }
 
 function saveCurrentSession() {
@@ -1221,9 +1250,20 @@ function addErrorMessage(error) {
     scrollToBottom();
 }
 
-function startNewChat() {
+async function startNewChat() {
+    // Abort any active stream first
+    if (state.isStreaming) {
+        window.electronAPI.abortStream();
+        state.isStreaming = false;
+        updateSendButton();
+        removeThinkingIndicator();
+    }
+    
+    // Bump generation counter so stale stream results are ignored
+    state.streamGeneration++;
+    
     clearChat();
-    startNewSession();
+    await startNewSession();
 }
 
 // Sidebar Resize Logic

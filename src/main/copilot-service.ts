@@ -193,7 +193,7 @@ You're a helpful AI integrated into a web browser with full browser automation c
 - Type text into search boxes and forms
 - Scroll pages up/down
 - Find text on pages
-- Take screenshots and get DETAILED VISUAL DESCRIPTIONS of page state (video playing, buttons visible, text content, etc.)
+- Take screenshots - the image is saved to disk and you can use the built-in view tool to see page contents visually
 - Navigate back/forward in history
 - Wait for page content or specific elements to load
 - Ask clarifying questions to the user rather than ending the turn.
@@ -201,8 +201,8 @@ You're a helpful AI integrated into a web browser with full browser automation c
 
 <instructions>
 - Be concise and direct.
-- IMPORTANT: You are a browser automation agent. DO NOT use any tools other than the provided \`browser_*\` tools.
-- **VISUAL AWARENESS**: Use \`browser_take_screenshot\` to get a detailed structured description of what's visible on the page. This tells you:
+- IMPORTANT: You are a browser automation agent. DO NOT use any tools other than the provided \`browser_*\` tools and the built-in \`view\` tool for viewing screenshots.
+- **VISUAL AWARENESS**: Use \`browser_take_screenshot\` to capture the page. It saves the image to a file and returns the path. Then use the built-in \`view\` tool with that path to see what's on the page visually.
   - Whether a video is playing, paused, buffering, or showing an ad
   - All visible buttons and their labels
   - Video titles, channels, and URLs on YouTube
@@ -244,7 +244,8 @@ If you've opened multiple tabs trying to find something please close the old unu
 </best_practices>
 
 <never_do>
-Never use any tools or take any actions outside of the provided browser tools. You ARE a BROWSER AUTOMATION AGENT.
+- Never use any tools other than browser_* tools and the view tool. You ARE a BROWSER AUTOMATION AGENT.
+- Never use shell, edit_file, read_file (except view for screenshots), or any file manipulation tools.
 </never_do>
 `,
             },
@@ -659,7 +660,7 @@ Never use any tools or take any actions outside of the provided browser tools. Y
                 },
             }),
             defineToolFn('browser_take_screenshot', {
-                description: 'Take a screenshot of the current page. Saves the image to disk and returns the file path. Use the built-in view tool to see the screenshot contents.',
+                description: 'Take a screenshot of the current page. Saves the image to disk and returns the file path. Use the built-in view tool with the returned path to see page contents.',
                 skipPermission: true,
                 parameters: {
                     type: 'object',
@@ -672,11 +673,10 @@ Never use any tools or take any actions outside of the provided browser tools. Y
                         // Capture screenshot for user display
                         const dataUrl = await withTimeout(callbacks.takeScreenshot(), 10000);
                         if (dataUrl) {
-                            // Send the image data to UI so user can see it in the chat
                             reportResult('browser_take_screenshot', dataUrl);
                         }
                         
-                        // Save screenshot to file so the built-in view tool can read it
+                        // Save to file for view tool access
                         let filePath: string | null = null;
                         if (callbacks.saveScreenshotToFile) {
                             filePath = await callbacks.saveScreenshotToFile();
@@ -686,7 +686,7 @@ Never use any tools or take any actions outside of the provided browser tools. Y
                             return `Screenshot saved to: ${filePath}\nUse the view tool to see the screenshot contents.`;
                         }
                         
-                        // Fallback to text description if file save failed
+                        // Fallback to text description if save failed
                         const visualDescription = await withTimeout(callbacks.getVisualDescription(), 10000);
                         return visualDescription;
                     } catch (error: any) {
